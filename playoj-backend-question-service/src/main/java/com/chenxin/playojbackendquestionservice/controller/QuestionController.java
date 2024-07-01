@@ -3,7 +3,6 @@ package com.chenxin.playojbackendquestionservice.controller;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-
 import com.chenxin.playojbackendcommon.annotation.AuthCheck;
 import com.chenxin.playojbackendcommon.common.BaseResponse;
 import com.chenxin.playojbackendcommon.common.DeleteRequest;
@@ -20,9 +19,11 @@ import com.chenxin.playojbackendmodel.model.entity.User;
 import com.chenxin.playojbackendmodel.model.entity.UserQuestion;
 import com.chenxin.playojbackendmodel.model.vo.QuestionVO;
 import com.chenxin.playojbackendmodel.model.vo.UserQuestionVO;
+import com.chenxin.playojbackendquestionservice.manager.RedisLimiterManager;
 import com.chenxin.playojbackendquestionservice.service.QuestionService;
-import com.chenxin.playojbackendserviceclient.service.UserQuestionService;
-import com.chenxin.playojbackendserviceclient.service.UserService;
+import com.chenxin.playojbackendquestionservice.service.UserQuestionService;
+import com.chenxin.playojbackendserviceclient.service.UserFeignClient;
+import com.fasterxml.jackson.databind.ser.Serializers;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.springframework.beans.BeanUtils;
@@ -39,18 +40,24 @@ import java.util.List;
  * @from <a href="https://yupi.icu">编程导航知识星球</a>
  */
 @RestController
-@RequestMapping("/question")
+@RequestMapping("/")
 @Slf4j
 public class QuestionController {
 
     @Resource
     private QuestionService questionService;
 
+    /**
+     * 远程服务
+     */
     @Resource
-    private UserService userService;
+    private UserFeignClient userFeignClient;
 
     @Resource
     private UserQuestionService userQuestionService;
+
+    @Resource
+    private RedisLimiterManager redisLimiterManager;
 
     // region 增删改查
 
@@ -81,7 +88,7 @@ public class QuestionController {
             question.setJudgeConfig(JSONUtil.toJsonStr(judgeConfig));
         }
         questionService.validQuestion(question, true);
-        User loginUser = userService.getLoginUser(request);
+        User loginUser = userFeignClient.getLoginUser(request);
         question.setUserId(loginUser.getId());
         question.setFavourNum(0);
         question.setThumbNum(0);
@@ -103,13 +110,13 @@ public class QuestionController {
         if (deleteRequest == null || deleteRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        User user = userService.getLoginUser(request);
+        User user = userFeignClient.getLoginUser(request);
         long id = deleteRequest.getId();
         // 判断是否存在
         Question oldQuestion = questionService.getById(id);
         ThrowUtils.throwIf(oldQuestion == null, ErrorCode.NOT_FOUND_ERROR);
         // 仅本人或管理员可删除
-        if (!oldQuestion.getUserId().equals(user.getId()) && !userService.isAdmin(request)) {
+        if (!oldQuestion.getUserId().equals(user.getId()) && !userFeignClient.isAdmin(user)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
         }
         boolean b = questionService.removeById(id);
@@ -171,12 +178,12 @@ public class QuestionController {
     }
 
     /**
-     * @description 管理员或自己查看题目详情
-     * @author fangchenxin
-     * @date 2024/6/15 20:39
      * @param id
      * @param request
      * @return com.chenxin.playojbackend.common.BaseResponse<com.chenxin.playojbackend.model.entity.Question>
+     * @description 管理员或自己查看题目详情
+     * @author fangchenxin
+     * @date 2024/6/15 20:39
      */
     @GetMapping("/get")
     public BaseResponse<Question> getQuestionById(long id, HttpServletRequest request) {
@@ -187,8 +194,8 @@ public class QuestionController {
         if (question == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR);
         }
-        User loginUser = userService.getLoginUser(request);
-        if (!question.getUserId().equals(loginUser.getId()) && !userService.isAdmin(loginUser)) {
+        User loginUser = userFeignClient.getLoginUser(request);
+        if (!question.getUserId().equals(loginUser.getId()) && !userFeignClient.isAdmin(loginUser)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
         }
         return ResultUtils.success(question);
@@ -242,7 +249,7 @@ public class QuestionController {
         if (questionQueryRequest == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        User loginUser = userService.getLoginUser(request);
+        User loginUser = userFeignClient.getLoginUser(request);
         questionQueryRequest.setUserId(loginUser.getId());
         long current = questionQueryRequest.getCurrent();
         long size = questionQueryRequest.getPageSize();
@@ -283,13 +290,13 @@ public class QuestionController {
         }
         // 参数校验
         questionService.validQuestion(question, false);
-        User loginUser = userService.getLoginUser(request);
+        User loginUser = userFeignClient.getLoginUser(request);
         long id = questionEditRequest.getId();
         // 判断是否存在
         Question oldQuestion = questionService.getById(id);
         ThrowUtils.throwIf(oldQuestion == null, ErrorCode.NOT_FOUND_ERROR);
         // 仅本人或管理员可编辑
-        if (!oldQuestion.getUserId().equals(loginUser.getId()) && !userService.isAdmin(loginUser)) {
+        if (!oldQuestion.getUserId().equals(loginUser.getId()) && !userFeignClient.isAdmin(loginUser)) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
         }
         boolean result = questionService.updateById(question);
@@ -311,7 +318,9 @@ public class QuestionController {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         // 登录才能提交
-        final User loginUser = userService.getLoginUser(request);
+        final User loginUser = userFeignClient.getLoginUser(request);
+        // 限流
+        redisLimiterManager.doRateLimit("question_submit_" + loginUser.getId());
         Long result = userQuestionService.doUserQuestion(userQuestionAddRequest, loginUser);
         return ResultUtils.success(result);
     }
@@ -322,7 +331,21 @@ public class QuestionController {
         int pageSize = questionSubmitQueryRequest.getPageSize();
         Page<UserQuestion> userQuestionPage = userQuestionService.page(new Page<>(current, pageSize), userQuestionService.getQueryWrapper(questionSubmitQueryRequest));
         // 脱敏信息
-        final User loginUser = userService.getLoginUser(request);
+        final User loginUser = userFeignClient.getLoginUser(request);
+        return ResultUtils.success(userQuestionService.getQuestionVOPage(userQuestionPage, loginUser));
+    }
+
+    @PostMapping("/my/user_question/list/page")
+    public BaseResponse<Page<UserQuestionVO>> listMyQuestionSubmitByPage(@RequestBody QuestionSubmitQueryRequest questionSubmitQueryRequest, HttpServletRequest request) {
+        if (questionSubmitQueryRequest == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        final User loginUser = userFeignClient.getLoginUser(request);
+        questionSubmitQueryRequest.setUserId(loginUser.getId());
+        int current = questionSubmitQueryRequest.getCurrent();
+        int pageSize = questionSubmitQueryRequest.getPageSize();
+        Page<UserQuestion> userQuestionPage = userQuestionService.page(new Page<>(current, pageSize), userQuestionService.getQueryWrapper(questionSubmitQueryRequest));
+        // 脱敏信息
         return ResultUtils.success(userQuestionService.getQuestionVOPage(userQuestionPage, loginUser));
     }
 

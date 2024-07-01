@@ -7,6 +7,7 @@ import com.chenxin.playojbackendcommon.exception.BusinessException;
 import com.chenxin.playojbackendjudgeservice.judge.codesandbox.CodeSandbox;
 import com.chenxin.playojbackendmodel.model.codesandbox.ExecuteCodeRequest;
 import com.chenxin.playojbackendmodel.model.codesandbox.ExecuteCodeResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 
 /**
@@ -15,6 +16,7 @@ import org.apache.commons.lang3.StringUtils;
  * @date 2024/6/17 12:28
  * @modify
  */
+@Slf4j
 public class RemoteCodeSandbox implements CodeSandbox {
 
     public static final String AUTH_REQUEST_HEADER = "auth";
@@ -23,8 +25,7 @@ public class RemoteCodeSandbox implements CodeSandbox {
 
     @Override
     public ExecuteCodeResponse executeCode(ExecuteCodeRequest executeCodeRequest) {
-        System.out.println("远程代码沙箱");
-        ExecuteCodeResponse executeCodeResponse = new ExecuteCodeResponse();
+        log.info("正在调用远程代码沙箱");
         String url = "http://localhost:8090/sandbox/execute";
         String json = JSONUtil.toJsonStr(executeCodeRequest);
         String responseStr = HttpUtil.createPost(url)

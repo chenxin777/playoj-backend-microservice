@@ -1,6 +1,7 @@
 package com.chenxin.playojbackendjudgeservice.judge;
 
 import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.chenxin.playojbackendcommon.common.ErrorCode;
 import com.chenxin.playojbackendcommon.exception.BusinessException;
 import com.chenxin.playojbackendjudgeservice.judge.codesandbox.CodeSandbox;
@@ -13,9 +14,9 @@ import com.chenxin.playojbackendmodel.model.dto.question.JudgeCase;
 import com.chenxin.playojbackendmodel.model.dto.userquestion.JudgeInfo;
 import com.chenxin.playojbackendmodel.model.entity.Question;
 import com.chenxin.playojbackendmodel.model.entity.UserQuestion;
+import com.chenxin.playojbackendmodel.model.enums.JudgeInfoMessageEnum;
 import com.chenxin.playojbackendmodel.model.enums.QuestionSubmitStatusEnum;
-import com.chenxin.playojbackendserviceclient.service.QuestionService;
-import com.chenxin.playojbackendserviceclient.service.UserQuestionService;
+import com.chenxin.playojbackendserviceclient.service.QuestionFeignClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -32,11 +33,11 @@ import java.util.stream.Collectors;
 @Service
 public class JudgeServiceImpl implements JudgeService {
 
+    /**
+     * 远程服务
+     */
     @Resource
-    private QuestionService questionService;
-
-    @Resource
-    private UserQuestionService userQuestionService;
+    private QuestionFeignClient questionFeignClient;
 
     @Resource
     private JudgeManager judgeManager;
@@ -54,7 +55,7 @@ public class JudgeServiceImpl implements JudgeService {
     @Override
     public UserQuestion doJudge(long userQuestionId) {
         // 查提交信息
-        UserQuestion userQuestion = userQuestionService.getById(userQuestionId);
+        UserQuestion userQuestion = questionFeignClient.getQuestionSubmitById(userQuestionId);
         if (userQuestion == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "提交信息不存在");
         }
@@ -64,7 +65,7 @@ public class JudgeServiceImpl implements JudgeService {
         }
         // 查题目
         Long questionId = userQuestion.getQuestionId();
-        Question question = questionService.getById(questionId);
+        Question question = questionFeignClient.getById(questionId);
         if (question == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "题目不存在");
         }
@@ -72,7 +73,7 @@ public class JudgeServiceImpl implements JudgeService {
         UserQuestion userQuestionUpdate = new UserQuestion();
         userQuestionUpdate.setId(userQuestionId);
         userQuestionUpdate.setStatus(QuestionSubmitStatusEnum.RUNNING.getValue());
-        boolean statusUpdateRes = userQuestionService.updateById(userQuestionUpdate);
+        boolean statusUpdateRes = questionFeignClient.updateQuestionSubmitById(userQuestionUpdate);
         if (!statusUpdateRes) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "判题状态更新失败");
         }
@@ -109,11 +110,20 @@ public class JudgeServiceImpl implements JudgeService {
         // 更新判题状态
         userQuestionUpdate.setStatus(QuestionSubmitStatusEnum.SUCCEED.getValue());
         userQuestionUpdate.setJudgeInfo(JSONUtil.toJsonStr(judgeInfoRes));
-        statusUpdateRes = userQuestionService.updateById(userQuestionUpdate);
+        statusUpdateRes = questionFeignClient.updateQuestionSubmitById(userQuestionUpdate);
         if (!statusUpdateRes) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "判题状态更新失败");
         }
+        synchronized (questionId) {
+            // 更新题目通过数
+            if (JudgeInfoMessageEnum.ACCEPTED.getText().equals(judgeInfoRes.getMessage())) {
+                boolean questionUpdateRes = questionFeignClient.updateQuestionAcceptNum(questionId);
+                if (!questionUpdateRes) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "题目提交数更新失败");
+                }
+            }
+        }
         // 查用户提交信息，返回
-        return userQuestionService.getById(userQuestionId);
+        return questionFeignClient.getQuestionSubmitById(userQuestionId);
     }
 }

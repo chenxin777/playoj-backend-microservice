@@ -1,5 +1,4 @@
-package com.chenxin.playojbackendserviceclient.service;
-
+package com.chenxin.playojbackendquestionservice.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
